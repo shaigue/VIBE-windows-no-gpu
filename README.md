@@ -1,3 +1,45 @@
+## installing in windows instructions:
+1. get miniconda
+2. run:
+`conda env create -f environment.yml`
+this will install the packages that are supported by conda
+3. run:
+`conda activate gip-vibe`
+this will activate the newly created environment
+4. run:
+`pip install -r requirements.text`
+this will install the packages that can only be installed via pip and not conda
+5. to run the demo additionally, we need to download the model and data:
+`python prepare_data.py`
+this will get the models and data and put it in the right place for the demo.
+6. for the demo to work, also one of the repo's the original authors used, YOLOv3, needs to be change, 
+as it uses `wget` command, and instead we will use the python `requests` module to download the files.
+so we need to get to:
+`\Users\<username>\miniconda3\envs\gip-vibe\Lib\site-packages\yolov3`
+and there open the file `yolo.py` add:
+`import requests` - to the import section of the code, 
+and change the function `download_url()` from:
+```
+print(f'Downloading files from {url}')
+cmd = ['wget', '-c', url, '-P', outdir]
+subprocess.call(cmd)
+```
+to:
+```
+filename = url.rsplit('/', 1)[1]
+filepath = outdir + os.sep + filename
+r = requests.get(url, allow_redirects=True)
+open(filepath, 'wb').write(r.content)
+```
+
+
+
+### some changes that I have made:
+* changes some torch.load() functions that will work also if there is no GPU available  
+* changed the bash `prepare_data.sh` to python `prepare_data.py`.
+* changed `lib/models/vibe.py`
+* changed `demo.py`
+
 # VIBE: Video Inference for Human Body Pose and Shape Estimation [CVPR-2020]
 [![report](https://img.shields.io/badge/arxiv-report-red)](https://arxiv.org/abs/1912.05656) [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1dFfwxZ52MN86FA6uFNypMEdFShd2euQA) [![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/vibe-video-inference-for-human-body-pose-and/3d-human-pose-estimation-on-3dpw)](https://paperswithcode.com/sota/3d-human-pose-estimation-on-3dpw?p=vibe-video-inference-for-human-body-pose-and)
 

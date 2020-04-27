@@ -16,12 +16,11 @@
 
 import os
 import torch
-import os.path as osp
 import torch.nn as nn
 import torch.nn.functional as F
 
-from lib.core.config import VIBE_DATA_DIR
 from lib.models.spin import Regressor, hmr
+from lib.models.attention import SelfAttention
 
 
 class TemporalEncoder(nn.Module):
@@ -63,6 +62,53 @@ class TemporalEncoder(nn.Module):
         return y
 
 
+class TemporalEncoderWAttention(nn.Module):
+    def __init__(
+            self,
+            n_layers=1,
+            hidden_size=2048,
+            add_linear=False,
+            bidirectional=False,
+            attention_size=1024,
+            attention_layers=1,
+            attention_dropout=0.5,
+            use_residual=True,
+    ):
+        super(TemporalEncoderWAttention, self).__init__()
+
+        self.gru = nn.GRU(input_size=2048, hidden_size=hidden_size, bidirectional=bidirectional, num_layers=n_layers)
+        self.linear = None
+        if bidirectional:
+            self.linear = nn.Linear(hidden_size*2, 2048)
+            self.attention = SelfAttention(attention_size*2,
+                                           layers=attention_layers,
+                                           dropout=attention_dropout)
+
+        elif add_linear:
+            self.linear = nn.Linear(hidden_size, 2048)
+        self.use_residual = use_residual
+        self.attention = SelfAttention(attention_size,
+                                       layers=attention_layers,
+                                       dropout=attention_dropout)
+
+
+    def forward(self, x):
+        n,t,f = x.shape
+        x = x.permute(1,0,2) # NTF -> TNF
+        outputs, _ = self.gru(x)
+        outputs = outputs.permute(1, 0, 2)
+        y, attentions = self.attention(outputs)
+        y = y.permute(1, 0, 2)
+        if self.linear:
+
+            y = self.linear(y.reshape(-1, y.size(-1)))
+            y = y.view(t,n,f)
+        if self.use_residual and y.shape[-1] == 2048:
+            y = y + x
+        y = y.permute(1,0,2) # TNF -> NTF
+        return y
+
+
 class VIBE(nn.Module):
     def __init__(
             self,
@@ -70,30 +116,49 @@ class VIBE(nn.Module):
             batch_size=64,
             n_layers=1,
             hidden_size=2048,
+            pretrained='data/vibe_data/spin_model_checkpoint.pth.tar',
             add_linear=False,
             bidirectional=False,
+            attention=False,
+            attention_cfg=None,
             use_residual=True,
-            pretrained=osp.join(VIBE_DATA_DIR, 'spin_model_checkpoint.pth.tar'),
+            disable_temporal=False
     ):
 
         super(VIBE, self).__init__()
 
         self.seqlen = seqlen
         self.batch_size = batch_size
+        self.disable_temporal = disable_temporal
 
-        self.encoder = TemporalEncoder(
-            n_layers=n_layers,
-            hidden_size=hidden_size,
-            bidirectional=bidirectional,
-            add_linear=add_linear,
-            use_residual=use_residual,
-        )
+        if attention:
+            cfg = attention_cfg
+            self.encoder = TemporalEncoderWAttention(
+                hidden_size=hidden_size,
+                bidirectional=bidirectional,
+                add_linear=add_linear,
+                attention_size=cfg.SIZE,
+                attention_layers=cfg.LAYERS,
+                attention_dropout=cfg.DROPOUT,
+                use_residual=use_residual,
+            )
+        else:
+            self.encoder = TemporalEncoder(
+                n_layers=n_layers,
+                hidden_size=hidden_size,
+                bidirectional=bidirectional,
+                add_linear=add_linear,
+                use_residual=use_residual,
+            )
 
         # regressor can predict cam, pose and shape params in an iterative way
         self.regressor = Regressor()
 
         if pretrained and os.path.isfile(pretrained):
-            pretrained_dict = torch.load(pretrained)['model']
+            if torch.cuda.is_available():
+                pretrained_dict = torch.load(pretrained)['model']
+            else:
+                pretrained_dict = torch.load(pretrained, map_location=torch.device('cpu'))['model']
 
             self.regressor.load_state_dict(pretrained_dict, strict=False)
             print(f'=> loaded pretrained model from \'{pretrained}\'')
@@ -103,8 +168,12 @@ class VIBE(nn.Module):
         # input size NTF
         batch_size, seqlen = input.shape[:2]
 
-        feature = self.encoder(input)
-        feature = feature.reshape(-1, feature.size(-1))
+        if self.disable_temporal:
+            feature = input.reshape(-1, input.size(-1))
+        else:
+            feature = self.encoder(input)
+            feature = feature.reshape(-1, feature.size(-1))
+
 
         smpl_output = self.regressor(feature, J_regressor=J_regressor)
         for s in smpl_output:
@@ -116,7 +185,6 @@ class VIBE(nn.Module):
 
         return smpl_output
 
-
 class VIBE_Demo(nn.Module):
     def __init__(
             self,
@@ -124,34 +192,58 @@ class VIBE_Demo(nn.Module):
             batch_size=64,
             n_layers=1,
             hidden_size=2048,
+            pretrained='data/vibe_data/spin_model_checkpoint.pth.tar',
             add_linear=False,
             bidirectional=False,
+            attention=False,
+            attention_cfg=None,
             use_residual=True,
-            pretrained=osp.join(VIBE_DATA_DIR, 'spin_model_checkpoint.pth.tar'),
+            disable_temporal=False
     ):
 
         super(VIBE_Demo, self).__init__()
 
         self.seqlen = seqlen
         self.batch_size = batch_size
+        self.disable_temporal = disable_temporal
 
-        self.encoder = TemporalEncoder(
-            n_layers=n_layers,
-            hidden_size=hidden_size,
-            bidirectional=bidirectional,
-            add_linear=add_linear,
-            use_residual=use_residual,
-        )
+        if attention:
+            cfg = attention_cfg
+            self.encoder = TemporalEncoderWAttention(
+                hidden_size=hidden_size,
+                bidirectional=bidirectional,
+                add_linear=add_linear,
+                attention_size=cfg.SIZE,
+                attention_layers=cfg.LAYERS,
+                attention_dropout=cfg.DROPOUT,
+                use_residual=use_residual,
+            )
+        else:
+            self.encoder = TemporalEncoder(
+                n_layers=n_layers,
+                hidden_size=hidden_size,
+                bidirectional=bidirectional,
+                add_linear=add_linear,
+                use_residual=use_residual,
+            )
 
         self.hmr = hmr()
-        checkpoint = torch.load(pretrained)
+        if torch.cuda.is_available():
+            checkpoint = torch.load(pretrained)
+        else:
+            checkpoint = torch.load(pretrained, map_location=torch.device('cpu'))
+
         self.hmr.load_state_dict(checkpoint['model'], strict=False)
 
         # regressor can predict cam, pose and shape params in an iterative way
         self.regressor = Regressor()
 
         if pretrained and os.path.isfile(pretrained):
-            pretrained_dict = torch.load(pretrained)['model']
+            if torch.cuda.is_available():
+                pretrained_dict = torch.load(pretrained)['model']
+            else:
+                pretrained_dict = torch.load(pretrained, map_location=torch.device('cpu'))['model']
+
 
             self.regressor.load_state_dict(pretrained_dict, strict=False)
             print(f'=> loaded pretrained model from \'{pretrained}\'')
@@ -163,9 +255,11 @@ class VIBE_Demo(nn.Module):
 
         feature = self.hmr.feature_extractor(input.reshape(-1, nc, h, w))
 
-        feature = feature.reshape(batch_size, seqlen, -1)
-        feature = self.encoder(feature)
-        feature = feature.reshape(-1, feature.size(-1))
+        if not self.disable_temporal:
+            feature = feature.reshape(batch_size, seqlen, -1)
+            feature = self.encoder(feature)
+            feature = feature.reshape(-1, feature.size(-1))
+
 
         smpl_output = self.regressor(feature, J_regressor=J_regressor)
 
