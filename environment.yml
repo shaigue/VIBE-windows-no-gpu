@@ -23,6 +23,8 @@ dependencies:
   - pillow=6.2            # image reading/writing
   - opencv=4.1            # computer vision
   - git                   # git:)
+  - yacs
+  - h5py
 
 ## other packages installed with pip:
   # smplx - for the body shape parameters
